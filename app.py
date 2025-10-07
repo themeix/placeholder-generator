@@ -162,34 +162,62 @@ def main():
     # JSON file selection section
     st.header("📁 Select JSON File")
     
-    json_files = get_json_files()
+    # Create tabs for different input methods
+    tab1, tab2 = st.tabs(["📂 Select from Directory", "📤 Upload File"])
     
-    if not json_files:
-        st.error("No JSON files found in the `/json/` directory. Please add JSON files to the `json` folder in your project root.")
-        return
+    json_content = None
+    selected_file_name = None
     
-    # File selection dropdown
-    selected_file = st.selectbox(
-        "Choose a JSON file:",
-        options=[""] + json_files,
-        index=0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1
-    )
+    with tab1:
+        json_files = get_json_files()
+        
+        if not json_files:
+            st.warning("No JSON files found in the `/json/` directory.")
+        else:
+            # File selection dropdown
+            selected_file = st.selectbox(
+                "Choose a JSON file:",
+                options=[""] + json_files,
+                index=0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1,
+                key="dropdown_select"
+            )
+            
+            if selected_file:
+                selected_file_name = selected_file
+                # Read JSON content from directory
+                json_path = os.path.join("json", selected_file)
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        json_content = f.read()
+                except Exception as e:
+                    st.error(f"Error reading file: {str(e)}")
     
-    if selected_file and selected_file != st.session_state.selected_file:
-        st.session_state.selected_file = selected_file
+    with tab2:
+        uploaded_file = st.file_uploader(
+            "Upload a JSON file",
+            type=['json'],
+            help="Upload a JSON file containing image URLs"
+        )
+        
+        if uploaded_file is not None:
+            selected_file_name = uploaded_file.name
+            try:
+                # Read uploaded file content
+                json_content = uploaded_file.read().decode('utf-8')
+            except Exception as e:
+                st.error(f"Error reading uploaded file: {str(e)}")
+    
+    # Process the selected/uploaded file
+    if json_content and selected_file_name:
+        st.session_state.selected_file = selected_file_name
         
         try:
-            # Read and parse JSON content
-            json_path = os.path.join("json", selected_file)
-            with open(json_path, 'r', encoding='utf-8') as f:
-                json_content = f.read()
-            
             # Store JSON content in session state for later use
             st.session_state.json_content = json_content
             
             # Show file info
-            file_size = os.path.getsize(json_path)
-            st.info(f"**{selected_file}** - {file_size / (1024*1024):.1f}MB")
+            file_size = len(json_content.encode('utf-8'))
+            st.info(f"**{selected_file_name}** - {file_size / (1024*1024):.1f}MB")
             
             # Extract image URLs
             urls = extract_image_urls(json_content)
