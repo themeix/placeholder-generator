@@ -97,9 +97,53 @@ def get_image_from_url(url: str) -> Optional[Image.Image]:
         return None
 
 def get_filename_from_url(url: str) -> str:
-    """Extract filename from URL."""
-    parsed = urlparse(url)
-    return os.path.basename(parsed.path)
+    """Extract filename from URL, handling edge cases."""
+    try:
+        parsed = urlparse(url)
+        filename = parsed.path.split('/')[-1]
+        if not filename or '.' not in filename:
+            return f"image_{hash(url) % 10000}.jpg"
+        return filename
+    except:
+        return f"image_{hash(url) % 10000}.jpg"
+
+
+def generate_placeholder_filename(original_filename: str, pattern: str, prefix: str, index: int = 1) -> str:
+    """Generate placeholder filename based on pattern and settings."""
+    # Get base name and extension
+    if '.' in original_filename:
+        name, ext = original_filename.rsplit('.', 1)
+    else:
+        name, ext = original_filename, 'png'
+    
+    # Clean prefix (remove trailing underscore if present)
+    clean_prefix = prefix.rstrip('_') if prefix else ""
+    
+    if pattern == "original_filename":
+        if clean_prefix:
+            return f"{clean_prefix}_{original_filename}"
+        else:
+            return f"{name}.png"  # Convert to PNG for placeholder
+    
+    elif pattern == "prefix_original_filename":
+        if clean_prefix:
+            return f"{clean_prefix}_{original_filename}"
+        else:
+            return f"{name}.png"
+    
+    elif pattern == "original_filename_suffix":
+        suffix = clean_prefix if clean_prefix else "placeholder"
+        return f"{name}_{suffix}.png"
+    
+    elif pattern == "prefix_index_original_filename":
+        index_str = f"{index:03d}"  # 001, 002, etc.
+        if clean_prefix:
+            return f"{clean_prefix}_{index_str}_{original_filename}"
+        else:
+            return f"{index_str}_{name}.png"
+    
+    # Default fallback
+    return f"placeholder_{name}.png"
 
 def create_placeholder(width: int, height: int, color: str, add_text: bool = True) -> Image.Image:
     """Create a placeholder image with specified dimensions and color."""
@@ -438,9 +482,12 @@ def main():
                     if st.button("Download All Placeholders (ZIP)"):
                         with st.spinner("Creating ZIP file..."):
                             files = {}
-                            for url, placeholder in st.session_state.placeholders_data.items():
-                                filename = f"placeholder_{get_filename_from_url(url)}"
-                                files[filename] = image_to_bytes(placeholder, "PNG")
+                            naming_pattern = st.session_state.get('naming_pattern', 'original_filename')
+                            custom_prefix = st.session_state.get('custom_prefix', '')
+                            for i, (url, placeholder) in enumerate(st.session_state.placeholders_data.items()):
+                                original_filename = get_filename_from_url(url)
+                                placeholder_filename = generate_placeholder_filename(original_filename, naming_pattern, custom_prefix, i+1)
+                                files[placeholder_filename] = image_to_bytes(placeholder, "PNG")
                             
                             zip_data = create_zip_file(files)
                             st.download_button(
@@ -510,7 +557,10 @@ def main():
                                             if url in st.session_state.placeholders_data:
                                                 placeholder = st.session_state.placeholders_data[url]
                                                 placeholder_bytes = image_to_bytes(placeholder, "PNG")
-                                                placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
+                                                # Use new naming pattern function
+                                                naming_pattern = st.session_state.get('naming_pattern', 'original_filename')
+                                                custom_prefix = st.session_state.get('custom_prefix', '')
+                                                placeholder_filename = generate_placeholder_filename(filename, naming_pattern, custom_prefix, i*4+j+1)
                                                 st.download_button(
                                                     label="📥 Placeholder",
                                                     data=placeholder_bytes,
@@ -564,7 +614,10 @@ def main():
                                             if url in st.session_state.placeholders_data:
                                                 placeholder = st.session_state.placeholders_data[url]
                                                 placeholder_bytes = image_to_bytes(placeholder, "PNG")
-                                                placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
+                                                # Use new naming pattern function
+                                                naming_pattern = st.session_state.get('naming_pattern', 'original_filename')
+                                                custom_prefix = st.session_state.get('custom_prefix', '')
+                                                placeholder_filename = generate_placeholder_filename(filename, naming_pattern, custom_prefix, i*4+j+1)
                                                 st.download_button(
                                                     label="📥 Place",
                                                     data=placeholder_bytes,
@@ -592,11 +645,43 @@ def main():
         
         # Batch rename options
         st.subheader("📝 Naming Patterns")
+        
+        # Custom prefix input
+        custom_prefix = st.text_input(
+            "Custom Prefix (optional)",
+            value="placeholder_",
+            help="Add a custom prefix to placeholder filenames. Leave empty for no prefix."
+        )
+        
         naming_pattern = st.selectbox(
             "Placeholder Naming Pattern",
-            ["placeholder_{filename}", "{filename}_placeholder", "ph_{index}_{filename}"],
+            [
+                "original_filename",  # Default: keep original name with prefix
+                "prefix_original_filename", 
+                "original_filename_suffix",
+                "prefix_index_original_filename"
+            ],
+            index=0,  # Default to original filename
             help="Choose how placeholder files should be named"
         )
+        
+        # Show example of naming pattern
+        example_filename = "69555-author.webp"
+        if naming_pattern == "original_filename":
+            if custom_prefix:
+                example_result = f"{custom_prefix}{example_filename}"
+            else:
+                example_result = example_filename
+        elif naming_pattern == "prefix_original_filename":
+            example_result = f"{custom_prefix}{example_filename}" if custom_prefix else example_filename
+        elif naming_pattern == "original_filename_suffix":
+            name, ext = example_filename.rsplit('.', 1) if '.' in example_filename else (example_filename, 'png')
+            suffix = custom_prefix.rstrip('_') if custom_prefix else "placeholder"
+            example_result = f"{name}_{suffix}.{ext}"
+        elif naming_pattern == "prefix_index_original_filename":
+            example_result = f"{custom_prefix}001_{example_filename}" if custom_prefix else f"001_{example_filename}"
+        
+        st.info(f"**Example:** `{example_filename}` → `{example_result}`")
         
         # Memory management settings
         st.subheader("💾 Memory Management")
@@ -609,6 +694,7 @@ def main():
         st.session_state.jpeg_quality = jpeg_quality
         st.session_state.png_compression = png_compression
         st.session_state.naming_pattern = naming_pattern
+        st.session_state.custom_prefix = custom_prefix
         st.session_state.max_image_size = max_image_size
         st.session_state.max_total_size = max_total_size
         
@@ -630,9 +716,12 @@ def main():
                     updated_json_str = json.dumps(original_json, indent=2)
                     
                     # Replace URLs
-                    for url in st.session_state.image_urls:
+                    for i, url in enumerate(st.session_state.image_urls):
                         filename = get_filename_from_url(url)
-                        placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
+                        # Use new naming pattern function
+                        naming_pattern = st.session_state.get('naming_pattern', 'original_filename')
+                        custom_prefix = st.session_state.get('custom_prefix', '')
+                        placeholder_filename = generate_placeholder_filename(filename, naming_pattern, custom_prefix, i+1)
                         new_url = base_url.rstrip('/') + '/' + placeholder_filename
                         updated_json_str = updated_json_str.replace(url, new_url)
                     
