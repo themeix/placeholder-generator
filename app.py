@@ -1,3 +1,11 @@
+import os
+import sys
+
+# macOS Homebrew Cairo path configuration
+cairo_lib_path = "/opt/homebrew/lib"
+if os.path.exists(cairo_lib_path):
+    os.environ["DYLD_LIBRARY_PATH"] = cairo_lib_path + ":" + os.environ.get("DYLD_LIBRARY_PATH", "")
+
 import streamlit as st
 import json
 import re
@@ -5,10 +13,9 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 import io
 import zipfile
-import os
 from urllib.parse import urlparse
 import tempfile
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional, Tuple
 
 # Page configuration
 st.set_page_config(
@@ -49,7 +56,7 @@ def extract_image_urls(json_content: str) -> Set[str]:
     
     return clean_urls
 
-def get_image_from_url(url: str) -> Image.Image:
+def get_image_from_url(url: str) -> Optional[Image.Image]:
     """Download and return PIL Image from URL."""
     try:
         response = requests.get(url, timeout=10)
@@ -57,15 +64,30 @@ def get_image_from_url(url: str) -> Image.Image:
         
         # Check if it's an SVG file
         if url.lower().endswith('.svg') or 'svg' in response.headers.get('content-type', '').lower():
-            # For SVG files, create a placeholder image instead of trying to convert
-            st.warning(f"SVG file detected: {url}. Creating placeholder instead.")
-            return create_placeholder(400, 300, "#CCCCCC", add_text=True)
+            # Try to import and use cairosvg for SVG conversion
+            try:
+                import cairosvg
+                # Convert SVG to PNG using cairosvg
+                png_data = cairosvg.svg2png(bytestring=response.content)
+                return Image.open(io.BytesIO(png_data))
+            except ImportError:
+                st.info(f"SVG file detected: {url}. Creating placeholder (cairosvg not available).")
+                return create_placeholder(400, 300, "#CCCCCC", add_text=True)
+            except Exception as svg_error:
+                st.warning(f"Error converting SVG {url}: {str(svg_error)}. Creating placeholder instead.")
+                return create_placeholder(400, 300, "#CCCCCC", add_text=True)
         else:
             # Handle regular image formats
             return Image.open(io.BytesIO(response.content))
             
+    except requests.RequestException as e:
+        st.error(f"Network error loading image from {url}: {str(e)}")
+        return None
+    except IOError as e:
+        st.error(f"File error loading image from {url}: {str(e)}")
+        return None
     except Exception as e:
-        st.error(f"Error loading image from {url}: {str(e)}")
+        st.error(f"Unexpected error loading image from {url}: {str(e)}")
         return None
 
 def get_filename_from_url(url: str) -> str:
@@ -110,9 +132,29 @@ def create_placeholder(width: int, height: int, color: str, add_text: bool = Tru
     
     return img
 
-def image_to_bytes(img: Image.Image, format: str = "PNG") -> bytes:
-    """Convert PIL Image to bytes."""
+def get_image_format_from_url(url: str) -> str:
+    """Determine image format from URL or default to JPEG."""
+    url_lower = url.lower()
+    if url_lower.endswith('.png'):
+        return 'PNG'
+    elif url_lower.endswith('.gif'):
+        return 'GIF'
+    elif url_lower.endswith('.bmp'):
+        return 'BMP'
+    elif url_lower.endswith('.webp'):
+        return 'WEBP'
+    elif url_lower.endswith('.tiff') or url_lower.endswith('.tif'):
+        return 'TIFF'
+    else:
+        return 'JPEG'  # Default format
+
+def image_to_bytes(img: Image.Image, format: str = None, quality: int = 85, png_compression: int = 6) -> bytes:
+    """Convert PIL Image to bytes with format preservation and quality options."""
     img_bytes = io.BytesIO()
+    
+    # Use PNG as default if no format specified
+    if format is None:
+        format = "PNG"
     
     # Convert RGBA to RGB if saving as JPEG
     if format.upper() == "JPEG" and img.mode == "RGBA":
@@ -121,7 +163,14 @@ def image_to_bytes(img: Image.Image, format: str = "PNG") -> bytes:
         rgb_img.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
         img = rgb_img
     
-    img.save(img_bytes, format=format)
+    # Save with appropriate options
+    if format.upper() == "JPEG":
+        img.save(img_bytes, format=format, quality=quality, optimize=True)
+    elif format.upper() == "PNG":
+        img.save(img_bytes, format=format, compress_level=png_compression, optimize=True)
+    else:
+        img.save(img_bytes, format=format)
+    
     return img_bytes.getvalue()
 
 def create_zip_file(files: Dict[str, bytes]) -> bytes:
