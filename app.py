@@ -1,10 +1,9 @@
+# macOS Homebrew Cairo path configuration - MUST be first
 import os
 import sys
 
-# macOS Homebrew Cairo path configuration
-cairo_lib_path = "/opt/homebrew/lib"
-if os.path.exists(cairo_lib_path):
-    os.environ["DYLD_LIBRARY_PATH"] = cairo_lib_path + ":" + os.environ.get("DYLD_LIBRARY_PATH", "")
+if os.name == 'posix' and 'DYLD_LIBRARY_PATH' not in os.environ:
+    os.environ['DYLD_LIBRARY_PATH'] = '/opt/homebrew/lib'
 
 import streamlit as st
 import json
@@ -16,6 +15,13 @@ import zipfile
 from urllib.parse import urlparse
 import tempfile
 from typing import List, Dict, Set, Optional, Tuple
+
+# Try to import cairosvg with fallback
+try:
+    import cairosvg
+    CAIROSVG_AVAILABLE = True
+except ImportError:
+    CAIROSVG_AVAILABLE = False
 
 # Page configuration
 st.set_page_config(
@@ -64,17 +70,17 @@ def get_image_from_url(url: str) -> Optional[Image.Image]:
         
         # Check if it's an SVG file
         if url.lower().endswith('.svg') or 'svg' in response.headers.get('content-type', '').lower():
-            # Try to import and use cairosvg for SVG conversion
-            try:
-                import cairosvg
-                # Convert SVG to PNG using cairosvg
-                png_data = cairosvg.svg2png(bytestring=response.content)
-                return Image.open(io.BytesIO(png_data))
-            except ImportError:
+            # Try to use cairosvg for SVG conversion if available
+            if CAIROSVG_AVAILABLE:
+                try:
+                    # Convert SVG to PNG using cairosvg
+                    png_data = cairosvg.svg2png(bytestring=response.content)
+                    return Image.open(io.BytesIO(png_data))
+                except Exception as svg_error:
+                    st.warning(f"Error converting SVG {url}: {str(svg_error)}. Creating placeholder instead.")
+                    return create_placeholder(400, 300, "#CCCCCC", add_text=True)
+            else:
                 st.info(f"SVG file detected: {url}. Creating placeholder (cairosvg not available).")
-                return create_placeholder(400, 300, "#CCCCCC", add_text=True)
-            except Exception as svg_error:
-                st.warning(f"Error converting SVG {url}: {str(svg_error)}. Creating placeholder instead.")
                 return create_placeholder(400, 300, "#CCCCCC", add_text=True)
         else:
             # Handle regular image formats
@@ -207,229 +213,413 @@ def main():
         st.session_state.placeholders_data = {}
     if 'selected_file' not in st.session_state:
         st.session_state.selected_file = None
+    if 'failed_downloads' not in st.session_state:
+        st.session_state.failed_downloads = {}
     
-    # JSON file selection section
-    st.header("📁 Select JSON File")
+    # Clear/Reset button
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Clear All & Start Over"):
+            for key in ['image_urls', 'images_data', 'placeholders_data', 'selected_file', 'failed_downloads']:
+                st.session_state.pop(key, None)
+            st.rerun()
     
-    # Create tabs for different input methods
-    tab1, tab2 = st.tabs(["📂 Select from Directory", "📤 Upload File"])
-    
-    json_content = None
-    selected_file_name = None
+    # Main tabs organization
+    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload", "⚙️ Process", "📥 Download", "🛠️ Settings"])
     
     with tab1:
-        json_files = get_json_files()
+        # JSON file selection section
+        st.header("📁 Select JSON File")
         
-        if not json_files:
-            st.warning("No JSON files found in the `/json/` directory.")
-        else:
-            # File selection dropdown
-            # Calculate index safely - if selected file is not in current list, default to 0
-            try:
-                current_index = 0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1
-            except ValueError:
-                # File was removed from directory, reset to default
-                current_index = 0
-                st.session_state.selected_file = None
+        # Create tabs for different input methods
+        upload_tab1, upload_tab2 = st.tabs(["📂 Select from Directory", "📤 Upload File"])
+        
+        json_content = None
+        selected_file_name = None
+        
+        with upload_tab1:
+            json_files = get_json_files()
             
-            selected_file = st.selectbox(
-                "Choose a JSON file:",
-                options=[""] + json_files,
-                index=current_index,
-                key="dropdown_select"
-            )
-            
-            if selected_file:
-                selected_file_name = selected_file
-                # Read JSON content from directory
-                json_path = os.path.join("json", selected_file)
+            if not json_files:
+                st.warning("No JSON files found in the `/json/` directory.")
+            else:
+                # File selection dropdown
+                # Calculate index safely - if selected file is not in current list, default to 0
                 try:
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        json_content = f.read()
-                except Exception as e:
-                    st.error(f"Error reading file: {str(e)}")
-    
-    with tab2:
-        uploaded_file = st.file_uploader(
-            "Upload a JSON file",
-            type=['json'],
-            help="Upload a JSON file containing image URLs"
-        )
-        
-        if uploaded_file is not None:
-            selected_file_name = uploaded_file.name
-            try:
-                # Read uploaded file content
-                json_content = uploaded_file.read().decode('utf-8')
-            except Exception as e:
-                st.error(f"Error reading uploaded file: {str(e)}")
-    
-    # Process the selected/uploaded file
-    if json_content and selected_file_name:
-        st.session_state.selected_file = selected_file_name
-        
-        try:
-            # Store JSON content in session state for later use
-            st.session_state.json_content = json_content
-            
-            # Show file info
-            file_size = len(json_content.encode('utf-8'))
-            st.info(f"**{selected_file_name}** - {file_size / (1024*1024):.1f}MB")
-            
-            # Extract image URLs
-            urls = extract_image_urls(json_content)
-            
-            if urls:
-                st.session_state.image_urls = urls
-                st.success(f"Found {len(urls)} unique image URLs")
+                    current_index = 0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1
+                except ValueError:
+                    # File was removed from directory, reset to default
+                    current_index = 0
+                    st.session_state.selected_file = None
                 
-                # Add export URLs to text file button
-                urls_text = "\n".join(sorted(urls))
-                st.download_button(
-                    label="📄 Export URLs to Text File",
-                    data=urls_text,
-                    file_name="extracted_image_urls.txt",
-                    mime="text/plain",
-                    help="Download all extracted image URLs as a text file"
+                selected_file = st.selectbox(
+                    "Choose a JSON file:",
+                    options=[""] + json_files,
+                    index=current_index,
+                    key="dropdown_select"
                 )
                 
-                # Load images
-                with st.spinner("Loading images..."):
-                    st.session_state.images_data = {}  # Reset images data
-                    for url in urls:
+                if selected_file:
+                    selected_file_name = selected_file
+                    # Read JSON content from directory
+                    json_path = os.path.join("json", selected_file)
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            json_content = f.read()
+                    except IOError as e:
+                        st.error(f"File error reading {selected_file}: {str(e)}")
+                    except Exception as e:
+                        st.error(f"Unexpected error reading {selected_file}: {str(e)}")
+        
+        with upload_tab2:
+            uploaded_file = st.file_uploader(
+                "Upload a JSON file",
+                type=['json'],
+                help="Upload a JSON file containing image URLs"
+            )
+            
+            if uploaded_file is not None:
+                selected_file_name = uploaded_file.name
+                try:
+                    # Read uploaded file content
+                    json_content = uploaded_file.read().decode('utf-8')
+                except UnicodeDecodeError as e:
+                    st.error(f"Encoding error reading uploaded file: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error reading uploaded file: {str(e)}")
+        
+        # Process the selected/uploaded file
+        if json_content and selected_file_name:
+            st.session_state.selected_file = selected_file_name
+            
+            try:
+                # Store JSON content in session state for later use
+                st.session_state.json_content = json_content
+                
+                # Show file info
+                file_size = len(json_content.encode('utf-8'))
+                st.info(f"**{selected_file_name}** - {file_size / (1024*1024):.1f}MB")
+                
+                # Extract image URLs
+                urls = extract_image_urls(json_content)
+                
+                if urls:
+                    st.session_state.image_urls = urls
+                    st.success(f"Found {len(urls)} unique image URLs")
+                    
+                    # Add export URLs to text file button
+                    urls_text = "\n".join(sorted(urls))
+                    st.download_button(
+                        label="📄 Export URLs to Text File",
+                        data=urls_text,
+                        file_name="extracted_image_urls.txt",
+                        mime="text/plain",
+                        help="Download all extracted image URLs as a text file"
+                    )
+                else:
+                    st.warning("No image URLs found in the JSON file")
+                    st.session_state.image_urls = set()
+                    st.session_state.images_data = {}
+                    
+            except json.JSONDecodeError as e:
+                st.error(f"Invalid JSON format: {str(e)}")
+                st.session_state.image_urls = set()
+                st.session_state.images_data = {}
+            except Exception as e:
+                st.error(f"Error processing file: {str(e)}")
+                st.session_state.image_urls = set()
+                st.session_state.images_data = {}
+    
+    with tab2:
+        # Process tab - Image loading and placeholder generation
+        if st.session_state.image_urls:
+            st.header("🔄 Process Images")
+            
+            # Load images section
+            if not st.session_state.images_data:
+                if st.button("🔽 Load All Images", type="primary"):
+                    urls = list(st.session_state.image_urls)
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    st.session_state.images_data = {}
+                    st.session_state.failed_downloads = {}
+                    
+                    for idx, url in enumerate(urls):
+                        status_text.text(f"Loading image {idx + 1} of {len(urls)}: {get_filename_from_url(url)}")
                         img = get_image_from_url(url)
                         if img:
                             st.session_state.images_data[url] = img
+                        else:
+                            st.session_state.failed_downloads[url] = "Failed to load image"
+                        progress_bar.progress((idx + 1) / len(urls))
+                    
+                    status_text.text("✅ Loading complete!")
+                    st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
+                    
+                    # Show failed downloads if any
+                    if st.session_state.failed_downloads:
+                        with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
+                            for url, error in st.session_state.failed_downloads.items():
+                                st.error(f"{get_filename_from_url(url)}: {error}")
             else:
-                st.warning("No image URLs found in the JSON file")
-                st.session_state.image_urls = set()
-                st.session_state.images_data = {}
+                st.success(f"✅ {len(st.session_state.images_data)} images loaded")
                 
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-            st.session_state.image_urls = set()
-            st.session_state.images_data = {}
+                # Show image statistics
+                if st.session_state.images_data:
+                    total_size_mb = sum(len(image_to_bytes(img)) for img in st.session_state.images_data.values()) / (1024 * 1024)
+                    avg_width = sum(img.width for img in st.session_state.images_data.values()) // len(st.session_state.images_data)
+                    avg_height = sum(img.height for img in st.session_state.images_data.values()) // len(st.session_state.images_data)
+                    unique_formats = set(get_image_format_from_url(url) for url in st.session_state.images_data.keys())
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Images", len(st.session_state.images_data))
+                    col2.metric("Total Size", f"{total_size_mb:.1f} MB")
+                    col3.metric("Avg Dimensions", f"{avg_width}×{avg_height}")
+                    col4.metric("Formats", ", ".join(unique_formats))
+            
+            # Placeholder generation section
+            if st.session_state.images_data:
+                st.subheader("🎨 Generate Placeholders")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    placeholder_color = st.color_picker("Placeholder Color", "#CCCCCC")
+                with col2:
+                    placeholder_text = st.text_input("Placeholder Text", value="Placeholder")
+                
+                # Generate placeholders button
+                if st.button("Generate Placeholders", type="primary"):
+                    with st.spinner("Generating placeholders..."):
+                        st.session_state.placeholders_data = {}
+                        for url, img in st.session_state.images_data.items():
+                            placeholder = create_placeholder(
+                                img.width, img.height, placeholder_color, add_text=bool(placeholder_text)
+                            )
+                            # Update placeholder text if custom text provided
+                            if placeholder_text != "Placeholder":
+                                placeholder = create_placeholder_with_custom_text(
+                                    img.width, img.height, placeholder_color, placeholder_text
+                                )
+                            st.session_state.placeholders_data[url] = placeholder
+                        st.success("Placeholders generated successfully!")
+        else:
+            st.info("Please upload and process a JSON file first in the Upload tab.")
     
-    # Placeholder settings
-    if st.session_state.image_urls:
-        st.header("🎨 Placeholder Settings")
+    with tab3:
+        # Download tab
+        if st.session_state.images_data:
+            st.header("📦 Downloads")
+            
+            # Batch download buttons
+            if st.session_state.placeholders_data:
+                st.subheader("📦 Batch Downloads")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("Download All Originals (ZIP)"):
+                        with st.spinner("Creating ZIP file..."):
+                            files = {}
+                            for url, img in st.session_state.images_data.items():
+                                filename = get_filename_from_url(url)
+                                original_format = get_image_format_from_url(url)
+                                files[filename] = image_to_bytes(img, original_format)
+                            
+                            zip_data = create_zip_file(files)
+                            st.download_button(
+                                label="📥 Download Originals ZIP",
+                                data=zip_data,
+                                file_name="original_images.zip",
+                                mime="application/zip"
+                            )
+                
+                with col2:
+                    if st.button("Download All Placeholders (ZIP)"):
+                        with st.spinner("Creating ZIP file..."):
+                            files = {}
+                            for url, placeholder in st.session_state.placeholders_data.items():
+                                filename = f"placeholder_{get_filename_from_url(url)}"
+                                files[filename] = image_to_bytes(placeholder, "PNG")
+                            
+                            zip_data = create_zip_file(files)
+                            st.download_button(
+                                label="📥 Download Placeholders ZIP",
+                                data=zip_data,
+                                file_name="placeholder_images.zip",
+                                mime="application/zip"
+                            )
+            
+            # Individual image downloads
+            st.subheader("🖼️ Individual Downloads")
+            
+            # Comparison view toggle
+            show_comparison = st.checkbox("Show Side-by-Side Comparison")
+            
+            if st.session_state.images_data:
+                # Display images in grid
+                urls_list = list(st.session_state.image_urls)
+                
+                for i in range(0, len(urls_list), 2 if show_comparison else 4):
+                    if show_comparison:
+                        cols = st.columns(2)
+                        for j, col in enumerate(cols):
+                            if i + j < len(urls_list):
+                                url = urls_list[i + j]
+                                img = st.session_state.images_data.get(url)
+                                
+                                if img:
+                                    with col:
+                                        # Side-by-side comparison
+                                        comp_col1, comp_col2 = st.columns(2)
+                                        with comp_col1:
+                                            st.image(img, caption="Original", use_container_width=True)
+                                        with comp_col2:
+                                            if url in st.session_state.placeholders_data:
+                                                placeholder = st.session_state.placeholders_data[url]
+                                                st.image(placeholder, caption="Placeholder", use_container_width=True)
+                                            else:
+                                                st.info("Generate placeholder first")
+                                        
+                                        # Download buttons
+                                        filename = get_filename_from_url(url)
+                                        st.caption(f"**{filename}** - {img.width}×{img.height}")
+                                        
+                                        # Three download buttons
+                                        btn_col1, btn_col2, btn_col3 = st.columns(3)
+                                        
+                                        with btn_col1:
+                                            original_format = get_image_format_from_url(url)
+                                            original_bytes = image_to_bytes(img, original_format)
+                                            st.download_button(
+                                                label="📥 Original",
+                                                data=original_bytes,
+                                                file_name=filename,
+                                                mime=f"image/{original_format.lower()}",
+                                                key=f"orig_comp_{i}_{j}"
+                                            )
+                                        
+                                        with btn_col2:
+                                            st.link_button(
+                                                label="🌐 Remote",
+                                                url=url,
+                                                help="Open original image URL"
+                                            )
+                                        
+                                        with btn_col3:
+                                            if url in st.session_state.placeholders_data:
+                                                placeholder = st.session_state.placeholders_data[url]
+                                                placeholder_bytes = image_to_bytes(placeholder, "PNG")
+                                                placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
+                                                st.download_button(
+                                                    label="📥 Placeholder",
+                                                    data=placeholder_bytes,
+                                                    file_name=placeholder_filename,
+                                                    mime="image/png",
+                                                    key=f"place_comp_{i}_{j}"
+                                                )
+                                            else:
+                                                st.button("Generate First", disabled=True, key=f"disabled_comp_{i}_{j}")
+                    else:
+                        # Regular grid view (4 per row)
+                        cols = st.columns(4)
+                        for j, col in enumerate(cols):
+                            if i + j < len(urls_list):
+                                url = urls_list[i + j]
+                                img = st.session_state.images_data.get(url)
+                                
+                                if img:
+                                    with col:
+                                        # Display image
+                                        st.image(img, use_container_width=True)
+                                        
+                                        # Filename and info
+                                        filename = get_filename_from_url(url)
+                                        st.caption(f"**{filename}**")
+                                        st.caption(f"Size: {img.width}x{img.height}")
+                                        
+                                        # Three download buttons
+                                        btn_col1, btn_col2, btn_col3 = st.columns(3)
+                                        
+                                        with btn_col1:
+                                            original_format = get_image_format_from_url(url)
+                                            original_bytes = image_to_bytes(img, original_format)
+                                            st.download_button(
+                                                label="📥 Orig",
+                                                data=original_bytes,
+                                                file_name=filename,
+                                                mime=f"image/{original_format.lower()}",
+                                                key=f"orig_{i}_{j}",
+                                                help="Download original image"
+                                            )
+                                        
+                                        with btn_col2:
+                                            st.link_button(
+                                                label="🌐 URL",
+                                                url=url,
+                                                help="Open original image URL"
+                                            )
+                                        
+                                        with btn_col3:
+                                            if url in st.session_state.placeholders_data:
+                                                placeholder = st.session_state.placeholders_data[url]
+                                                placeholder_bytes = image_to_bytes(placeholder, "PNG")
+                                                placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
+                                                st.download_button(
+                                                    label="📥 Place",
+                                                    data=placeholder_bytes,
+                                                    file_name=placeholder_filename,
+                                                    mime="image/png",
+                                                    key=f"place_{i}_{j}",
+                                                    help="Download placeholder image"
+                                                )
+                                            else:
+                                                st.button("Gen First", disabled=True, key=f"disabled_{i}_{j}", help="Generate placeholder first")
+        else:
+            st.info("No images loaded. Please process images first in the Process tab.")
+    
+    with tab4:
+        # Settings tab
+        st.header("🛠️ Settings")
         
+        # Image optimization settings
+        st.subheader("🎛️ Image Quality Settings")
         col1, col2 = st.columns(2)
         with col1:
-            placeholder_color = st.color_picker("Placeholder Color", "#CCCCCC")
+            jpeg_quality = st.slider("JPEG Quality", 50, 100, 85, help="Higher values = better quality, larger file size")
         with col2:
-            add_text = st.checkbox("Add 'Placeholder' text", value=True)
+            png_compression = st.slider("PNG Compression", 0, 9, 6, help="Higher values = smaller file size, slower compression")
         
-        # Generate placeholders button
-        if st.button("Generate Placeholders", type="primary"):
-            with st.spinner("Generating placeholders..."):
-                st.session_state.placeholders_data = {}
-                for url, img in st.session_state.images_data.items():
-                    placeholder = create_placeholder(
-                        img.width, img.height, placeholder_color, add_text
-                    )
-                    st.session_state.placeholders_data[url] = placeholder
-                st.success("Placeholders generated successfully!")
+        # Batch rename options
+        st.subheader("📝 Naming Patterns")
+        naming_pattern = st.selectbox(
+            "Placeholder Naming Pattern",
+            ["placeholder_{filename}", "{filename}_placeholder", "ph_{index}_{filename}"],
+            help="Choose how placeholder files should be named"
+        )
         
-        # Batch download buttons
-        if st.session_state.placeholders_data:
-            st.header("📦 Batch Downloads")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("Download All Originals (ZIP)"):
-                    with st.spinner("Creating ZIP file..."):
-                        files = {}
-                        for url, img in st.session_state.images_data.items():
-                            filename = get_filename_from_url(url)
-                            files[filename] = image_to_bytes(img, "JPEG")
-                        
-                        zip_data = create_zip_file(files)
-                        st.download_button(
-                            label="📥 Download Originals ZIP",
-                            data=zip_data,
-                            file_name="original_images.zip",
-                            mime="application/zip"
-                        )
-            
-            with col2:
-                if st.button("Download All Placeholders (ZIP)"):
-                    with st.spinner("Creating ZIP file..."):
-                        files = {}
-                        for url, placeholder in st.session_state.placeholders_data.items():
-                            filename = f"placeholder_{get_filename_from_url(url)}"
-                            files[filename] = image_to_bytes(placeholder, "PNG")
-                        
-                        zip_data = create_zip_file(files)
-                        st.download_button(
-                            label="📥 Download Placeholders ZIP",
-                            data=zip_data,
-                            file_name="placeholder_images.zip",
-                            mime="application/zip"
-                        )
+        # Memory management settings
+        st.subheader("💾 Memory Management")
+        max_image_size = st.slider("Max Image Dimension (pixels)", 500, 4000, 2000, 
+                                 help="Images larger than this will be resized to save memory")
+        max_total_size = st.slider("Max Total Size (MB)", 50, 500, 200,
+                                 help="Stop loading images when total size exceeds this limit")
         
-        # Image grid display
-        st.header("🖼️ Image Gallery")
-        
-        if st.session_state.images_data:
-            # Display images in grid (4 per row)
-            urls_list = list(st.session_state.image_urls)
-            
-            for i in range(0, len(urls_list), 4):
-                cols = st.columns(4)
-                
-                for j, col in enumerate(cols):
-                    if i + j < len(urls_list):
-                        url = urls_list[i + j]
-                        img = st.session_state.images_data.get(url)
-                        
-                        if img:
-                            with col:
-                                # Display image
-                                st.image(img, use_container_width=True)
-                                
-                                # Filename
-                                filename = get_filename_from_url(url)
-                                st.caption(f"**{filename}**")
-                                st.caption(f"Size: {img.width}x{img.height}")
-                                
-                                # Download buttons
-                                col_a, col_b = st.columns(2)
-                                
-                                with col_a:
-                                    original_bytes = image_to_bytes(img, "JPEG")
-                                    st.download_button(
-                                        label="📥 Original",
-                                        data=original_bytes,
-                                        file_name=filename,
-                                        mime="image/jpeg",
-                                        key=f"orig_{i}_{j}"
-                                    )
-                                
-                                with col_b:
-                                    if url in st.session_state.placeholders_data:
-                                        placeholder = st.session_state.placeholders_data[url]
-                                        placeholder_bytes = image_to_bytes(placeholder, "PNG")
-                                        placeholder_filename = f"placeholder_{filename.rsplit('.', 1)[0]}.png"
-                                        st.download_button(
-                                            label="📥 Placeholder",
-                                            data=placeholder_bytes,
-                                            file_name=placeholder_filename,
-                                            mime="image/png",
-                                            key=f"place_{i}_{j}"
-                                        )
-                                    else:
-                                        st.button("Generate First", disabled=True, key=f"disabled_{i}_{j}")
+        # Store settings in session state
+        st.session_state.jpeg_quality = jpeg_quality
+        st.session_state.png_compression = png_compression
+        st.session_state.naming_pattern = naming_pattern
+        st.session_state.max_image_size = max_image_size
+        st.session_state.max_total_size = max_total_size
         
         # JSON Updater section
         if st.session_state.placeholders_data:
-            st.header("🔄 JSON Updater")
+            st.subheader("🔄 JSON Updater")
             st.markdown("Replace original image URLs with placeholder URLs in your JSON.")
             
             base_url = st.text_input(
                 "Base URL for hosted placeholders",
-                value="https://diviflow.com/palceholder/images/",
+                value="https://diviflow.com/placeholder/images/",
                 help="Enter the base URL where your placeholder images will be hosted"
             )
             
@@ -458,8 +648,45 @@ def main():
                         mime="application/json"
                     )
                     
+                except json.JSONDecodeError as e:
+                    st.error(f"JSON parsing error: {str(e)}")
                 except Exception as e:
                     st.error(f"Error updating JSON: {str(e)}")
+
+def create_placeholder_with_custom_text(width: int, height: int, color: str, text: str) -> Image.Image:
+    """Create a placeholder image with custom text."""
+    # Create image with solid color
+    img = Image.new('RGB', (width, height), color)
+    
+    draw = ImageDraw.Draw(img)
+    
+    # Calculate font size based on image dimensions
+    font_size = min(width, height) // 10
+    font_size = max(20, min(font_size, 100))  # Clamp between 20 and 100
+    
+    try:
+        # Try to use a default font
+        font = ImageFont.truetype("Arial.ttf", font_size)
+    except:
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+    
+    # Get text bounding box
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    # Center the text
+    x = (width - text_width) // 2
+    y = (height - text_height) // 2
+    
+    # Draw text with contrasting color
+    text_color = "white" if color.lower() in ["black", "#000000", "#000"] else "black"
+    draw.text((x, y), text, fill=text_color, font=font)
+    
+    return img
 
 if __name__ == "__main__":
     main()
