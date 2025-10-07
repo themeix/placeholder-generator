@@ -175,10 +175,18 @@ def main():
             st.warning("No JSON files found in the `/json/` directory.")
         else:
             # File selection dropdown
+            # Calculate index safely - if selected file is not in current list, default to 0
+            try:
+                current_index = 0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1
+            except ValueError:
+                # File was removed from directory, reset to default
+                current_index = 0
+                st.session_state.selected_file = None
+            
             selected_file = st.selectbox(
                 "Choose a JSON file:",
                 options=[""] + json_files,
-                index=0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1,
+                index=current_index,
                 key="dropdown_select"
             )
             
