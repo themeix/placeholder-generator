@@ -298,7 +298,7 @@ def get_json_files() -> List[str]:
 
 def main():
     st.title("🖼️ Image Placeholder Manager")
-    st.markdown("Select a JSON file from the `/json/` directory to generate placeholders and manage downloads.")
+    st.markdown("Upload a JSON file to load images and manage placeholders.")
     
     # Initialize session state
     if 'image_urls' not in st.session_state:
@@ -324,67 +324,29 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload", "⚙️ Process", "📥 Download", "🛠️ Settings"])
     
     with tab1:
-        # JSON file selection section
-        st.header("📁 Select JSON File")
-        
-        # Create tabs for different input methods
-        upload_tab1, upload_tab2 = st.tabs(["📂 Select from Directory", "📤 Upload File"])
+        # JSON file upload section (directory selection removed)
+        st.header("📤 Upload JSON File")
         
         json_content = None
         selected_file_name = None
         
-        with upload_tab1:
-            json_files = get_json_files()
-            
-            if not json_files:
-                st.warning("No JSON files found in the `/json/` directory.")
-            else:
-                # File selection dropdown
-                # Calculate index safely - if selected file is not in current list, default to 0
-                try:
-                    current_index = 0 if st.session_state.selected_file is None else json_files.index(st.session_state.selected_file) + 1
-                except ValueError:
-                    # File was removed from directory, reset to default
-                    current_index = 0
-                    st.session_state.selected_file = None
-                
-                selected_file = st.selectbox(
-                    "Choose a JSON file:",
-                    options=[""] + json_files,
-                    index=current_index,
-                    key="dropdown_select"
-                )
-                
-                if selected_file:
-                    selected_file_name = selected_file
-                    # Read JSON content from directory
-                    json_path = os.path.join("json", selected_file)
-                    try:
-                        with open(json_path, 'r', encoding='utf-8') as f:
-                            json_content = f.read()
-                    except IOError as e:
-                        st.error(f"File error reading {selected_file}: {str(e)}")
-                    except Exception as e:
-                        st.error(f"Unexpected error reading {selected_file}: {str(e)}")
+        uploaded_file = st.file_uploader(
+            "Upload a JSON file",
+            type=['json'],
+            help="Upload a JSON file containing image URLs"
+        )
         
-        with upload_tab2:
-            uploaded_file = st.file_uploader(
-                "Upload a JSON file",
-                type=['json'],
-                help="Upload a JSON file containing image URLs"
-            )
-            
-            if uploaded_file is not None:
-                selected_file_name = uploaded_file.name
-                try:
-                    # Read uploaded file content
-                    json_content = uploaded_file.read().decode('utf-8')
-                except UnicodeDecodeError as e:
-                    st.error(f"Encoding error reading uploaded file: {str(e)}")
-                except Exception as e:
-                    st.error(f"Error reading uploaded file: {str(e)}")
+        if uploaded_file is not None:
+            selected_file_name = uploaded_file.name
+            try:
+                # Read uploaded file content
+                json_content = uploaded_file.read().decode('utf-8')
+            except UnicodeDecodeError as e:
+                st.error(f"Encoding error reading uploaded file: {str(e)}")
+            except Exception as e:
+                st.error(f"Error reading uploaded file: {str(e)}")
         
-        # Process the selected/uploaded file
+        # Process the uploaded file and auto-load images
         if json_content and selected_file_name:
             st.session_state.selected_file = selected_file_name
             
@@ -400,10 +362,14 @@ def main():
                 urls = extract_image_urls(json_content)
                 
                 if urls:
+                    # Reset previous state when a new file is uploaded
                     st.session_state.image_urls = urls
+                    st.session_state.images_data = {}
+                    st.session_state.placeholders_data = {}
+                    st.session_state.failed_downloads = {}
                     st.success(f"Found {len(urls)} unique image URLs")
                     
-                    # Add export URLs to text file button
+                    # Export URLs button
                     urls_text = "\n".join(sorted(urls))
                     st.download_button(
                         label="📄 Export URLs to Text File",
@@ -412,6 +378,50 @@ def main():
                         mime="text/plain",
                         help="Download all extracted image URLs as a text file"
                     )
+                    
+                    # Auto-load images immediately
+                    urls_list = list(st.session_state.image_urls)
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for idx, url in enumerate(urls_list):
+                        status_text.text(f"Loading image {idx + 1} of {len(urls_list)}: {get_filename_from_url(url)}")
+                        result = get_image_from_url(url)
+                        if result:
+                            img, format_info = result
+                            st.session_state.images_data[url] = {
+                                'image': img,
+                                'format': format_info
+                            }
+                        else:
+                            st.session_state.failed_downloads[url] = "Failed to load image"
+                        progress_bar.progress((idx + 1) / len(urls_list))
+                    
+                    status_text.text("✅ Loading complete!")
+                    st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
+                    
+                    # Show failed downloads if any
+                    if st.session_state.failed_downloads:
+                        with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
+                            for url, error in st.session_state.failed_downloads.items():
+                                st.error(f"{get_filename_from_url(url)}: {error}")
+                    
+                    # Display a quick preview grid of loaded images
+                    if st.session_state.images_data:
+                        st.subheader("🖼️ Loaded Images Preview")
+                        urls_list = list(st.session_state.image_urls)
+                        for i in range(0, len(urls_list), 4):
+                            cols = st.columns(4)
+                            for j, col in enumerate(cols):
+                                if i + j < len(urls_list):
+                                    url = urls_list[i + j]
+                                    img_data = st.session_state.images_data.get(url)
+                                    if img_data:
+                                        img = img_data['image']
+                                        with col:
+                                            st.image(img, use_container_width=True)
+                                            filename = get_filename_from_url(url)
+                                            st.caption(f"**{filename}**")
                 else:
                     st.warning("No image URLs found in the JSON file")
                     st.session_state.image_urls = set()
@@ -431,37 +441,36 @@ def main():
         if st.session_state.image_urls:
             st.header("🔄 Process Images")
             
-            # Load images section
+            # Auto-load images if not already loaded (no button)
             if not st.session_state.images_data:
-                if st.button("🔽 Load All Images", type="primary"):
-                    urls = list(st.session_state.image_urls)
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    st.session_state.images_data = {}
-                    st.session_state.failed_downloads = {}
-                    
-                    for idx, url in enumerate(urls):
-                        status_text.text(f"Loading image {idx + 1} of {len(urls)}: {get_filename_from_url(url)}")
-                        result = get_image_from_url(url)
-                        if result:
-                            img, format_info = result
-                            st.session_state.images_data[url] = {
-                                'image': img,
-                                'format': format_info
-                            }
-                        else:
-                            st.session_state.failed_downloads[url] = "Failed to load image"
-                        progress_bar.progress((idx + 1) / len(urls))
-                    
-                    status_text.text("✅ Loading complete!")
-                    st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
-                    
-                    # Show failed downloads if any
-                    if st.session_state.failed_downloads:
-                        with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
-                            for url, error in st.session_state.failed_downloads.items():
-                                st.error(f"{get_filename_from_url(url)}: {error}")
+                urls = list(st.session_state.image_urls)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                st.session_state.images_data = {}
+                st.session_state.failed_downloads = {}
+                
+                for idx, url in enumerate(urls):
+                    status_text.text(f"Loading image {idx + 1} of {len(urls)}: {get_filename_from_url(url)}")
+                    result = get_image_from_url(url)
+                    if result:
+                        img, format_info = result
+                        st.session_state.images_data[url] = {
+                            'image': img,
+                            'format': format_info
+                        }
+                    else:
+                        st.session_state.failed_downloads[url] = "Failed to load image"
+                    progress_bar.progress((idx + 1) / len(urls))
+                
+                status_text.text("✅ Loading complete!")
+                st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
+                
+                # Show failed downloads if any
+                if st.session_state.failed_downloads:
+                    with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
+                        for url, error in st.session_state.failed_downloads.items():
+                            st.error(f"{get_filename_from_url(url)}: {error}")
             else:
                 st.success(f"✅ {len(st.session_state.images_data)} images loaded")
                 
