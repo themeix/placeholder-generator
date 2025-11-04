@@ -311,21 +311,23 @@ def main():
         st.session_state.selected_file = None
     if 'failed_downloads' not in st.session_state:
         st.session_state.failed_downloads = {}
+    if 'processed_file_name' not in st.session_state:
+        st.session_state.processed_file_name = None
     
     # Clear/Reset button
     col1, col2 = st.columns([1, 4])
     with col1:
-        if st.button("🔄 Clear All & Start Over"):
-            for key in ['image_urls', 'images_data', 'placeholders_data', 'selected_file', 'failed_downloads']:
+        if st.button("  Clear All & Start Over"):
+            for key in ['image_urls', 'images_data', 'placeholders_data', 'selected_file', 'failed_downloads', 'processed_file_name']:
                 st.session_state.pop(key, None)
             st.rerun()
     
     # Main tabs organization
-    tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload", "⚙️ Process", "📥 Download", "🛠️ Settings"])
+    tab1, tab2, tab3, tab4 = st.tabs(["  Upload", "  Process", "  Download", "  Settings"])
     
     with tab1:
         # JSON file upload section (directory selection removed)
-        st.header("📤 Upload JSON File")
+        st.header(" Upload JSON File")
         
         json_content = None
         selected_file_name = None
@@ -362,66 +364,73 @@ def main():
                 urls = extract_image_urls(json_content)
                 
                 if urls:
-                    # Reset previous state when a new file is uploaded
-                    st.session_state.image_urls = urls
-                    st.session_state.images_data = {}
-                    st.session_state.placeholders_data = {}
-                    st.session_state.failed_downloads = {}
-                    st.success(f"Found {len(urls)} unique image URLs")
-                    
-                    # Export URLs button
-                    urls_text = "\n".join(sorted(urls))
-                    st.download_button(
-                        label="📄 Export URLs to Text File",
-                        data=urls_text,
-                        file_name="extracted_image_urls.txt",
-                        mime="text/plain",
-                        help="Download all extracted image URLs as a text file"
-                    )
-                    
-                    # Auto-load images immediately
-                    urls_list = list(st.session_state.image_urls)
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    for idx, url in enumerate(urls_list):
-                        status_text.text(f"Loading image {idx + 1} of {len(urls_list)}: {get_filename_from_url(url)}")
-                        result = get_image_from_url(url)
-                        if result:
-                            img, format_info = result
-                            st.session_state.images_data[url] = {
-                                'image': img,
-                                'format': format_info
-                            }
-                        else:
-                            st.session_state.failed_downloads[url] = "Failed to load image"
-                        progress_bar.progress((idx + 1) / len(urls_list))
-                    
-                    status_text.text("✅ Loading complete!")
-                    st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
-                    
-                    # Show failed downloads if any
-                    if st.session_state.failed_downloads:
-                        with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
-                            for url, error in st.session_state.failed_downloads.items():
-                                st.error(f"{get_filename_from_url(url)}: {error}")
-                    
-                    # Display a quick preview grid of loaded images
-                    if st.session_state.images_data:
-                        st.subheader("🖼️ Loaded Images Preview")
+                    # Only process if this is a new upload/file
+                    if st.session_state.processed_file_name != selected_file_name:
+                        # Reset previous state when a new file is uploaded
+                        st.session_state.image_urls = urls
+                        st.session_state.images_data = {}
+                        st.session_state.placeholders_data = {}
+                        st.session_state.failed_downloads = {}
+                        st.success(f"Found {len(urls)} unique image URLs")
+                        
+                        # Export URLs button
+                        urls_text = "\n".join(sorted(urls))
+                        st.download_button(
+                            label="📄 Export URLs to Text File",
+                            data=urls_text,
+                            file_name="extracted_image_urls.txt",
+                            mime="text/plain",
+                            help="Download all extracted image URLs as a text file"
+                        )
+                        
+                        # Auto-load images immediately
                         urls_list = list(st.session_state.image_urls)
-                        for i in range(0, len(urls_list), 4):
-                            cols = st.columns(4)
-                            for j, col in enumerate(cols):
-                                if i + j < len(urls_list):
-                                    url = urls_list[i + j]
-                                    img_data = st.session_state.images_data.get(url)
-                                    if img_data:
-                                        img = img_data['image']
-                                        with col:
-                                            st.image(img, use_container_width=True)
-                                            filename = get_filename_from_url(url)
-                                            st.caption(f"**{filename}**")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        for idx, url in enumerate(urls_list):
+                            status_text.text(f"Loading image {idx + 1} of {len(urls_list)}: {get_filename_from_url(url)}")
+                            result = get_image_from_url(url)
+                            if result:
+                                img, format_info = result
+                                st.session_state.images_data[url] = {
+                                    'image': img,
+                                    'format': format_info
+                                }
+                            else:
+                                st.session_state.failed_downloads[url] = "Failed to load image"
+                            progress_bar.progress((idx + 1) / len(urls_list))
+                        
+                        status_text.text("All images loaded successfully!")
+                        st.success(f"Loaded {len(st.session_state.images_data)} images successfully")
+                        
+                        # Show failed downloads if any
+                        if st.session_state.failed_downloads:
+                            with st.expander(f"⚠️ {len(st.session_state.failed_downloads)} Failed Downloads"):
+                                for url, error in st.session_state.failed_downloads.items():
+                                    st.error(f"{get_filename_from_url(url)}: {error}")
+                        
+                        # Display a quick preview grid of loaded images
+                        if st.session_state.images_data:
+                            st.subheader(" Loaded Images Preview")
+                            urls_list = list(st.session_state.image_urls)
+                            for i in range(0, len(urls_list), 4):
+                                cols = st.columns(4)
+                                for j, col in enumerate(cols):
+                                    if i + j < len(urls_list):
+                                        url = urls_list[i + j]
+                                        img_data = st.session_state.images_data.get(url)
+                                        if img_data:
+                                            img = img_data['image']
+                                            with col:
+                                                st.image(img, use_container_width=True)
+                                                filename = get_filename_from_url(url)
+                                                st.caption(f"**{filename}**")
+                        
+                        # Mark as processed to avoid clearing placeholders on rerun
+                        st.session_state.processed_file_name = selected_file_name
+                    else:
+                        st.info("This file is already processed. Skipping reload.")
                 else:
                     st.warning("No image URLs found in the JSON file")
                     st.session_state.image_urls = set()
