@@ -35,6 +35,30 @@ A powerful Streamlit application for managing image placeholders from JSON files
 pip install -r requirements.txt
 ```
 
+### Deploying to Streamlit Cloud
+
+This app uses `cairosvg` to convert SVGs to PNGs. `cairosvg` depends on native system libraries (Cairo and Pango). On Streamlit Cloud, you must declare these Linux packages so they are installed at build time.
+
+1. Ensure `requirements.txt` includes:
+```txt
+cairosvg>=2.7.0
+```
+
+2. Add a `packages.txt` file at the repository root with the following contents:
+```txt
+libcairo2
+libpango-1.0-0
+libpangocairo-1.0-0
+fonts-dejavu-core
+```
+
+3. Push and redeploy the app on Streamlit Cloud. The build will install these system libraries, and the `cairosvg` import will succeed.
+
+Troubleshooting:
+- If you still see `OSError` related to `libcairo`, confirm the `packages.txt` file is in the repo root and the app was redeployed.
+- Check the Cloud build logs for apt installation; if fonts are missing for SVG text rendering, ensure `fonts-dejavu-core` is present.
+- The app falls back to placeholders for SVGs if `cairosvg` is unavailable, but installing the above packages enables proper SVG conversion.
+
 ## Usage
 
 1. Run the Streamlit app:
