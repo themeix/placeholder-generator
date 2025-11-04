@@ -62,38 +62,73 @@ def extract_image_urls(json_content: str) -> Set[str]:
     
     return clean_urls
 
-def get_image_from_url(url: str) -> Optional[Image.Image]:
-    """Download and return PIL Image from URL."""
+def get_image_from_url(url: str) -> Optional[Tuple[Image.Image, str]]:
+    """Download and return PIL Image from URL with format info."""
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         
+        content_type = response.headers.get('content-type', '').lower()
+        
         # Check if it's an SVG file
-        if url.lower().endswith('.svg') or 'svg' in response.headers.get('content-type', '').lower():
-            # Try to use cairosvg for SVG conversion if available
+        if url.lower().endswith('.svg') or 'svg' in content_type:
             if CAIROSVG_AVAILABLE:
                 try:
-                    # Convert SVG to PNG using cairosvg
-                    png_data = cairosvg.svg2png(bytestring=response.content)
-                    return Image.open(io.BytesIO(png_data))
+                    # Try to get SVG dimensions
+                    svg_content = response.content
+                    
+                    # Parse SVG to get width/height
+                    import xml.etree.ElementTree as ET
+                    try:
+                        root = ET.fromstring(svg_content)
+                        width = root.get('width', '400')
+                        height = root.get('height', '300')
+                        
+                        # Remove 'px' or other units and extract numbers
+                        width = int(re.sub(r'[^\d]', '', str(width)) or 400)
+                        height = int(re.sub(r'[^\d]', '', str(height)) or 300)
+                        
+                        # Ensure reasonable dimensions
+                        width = max(100, min(width, 2000))
+                        height = max(100, min(height, 2000))
+                    except:
+                        width, height = 400, 300
+                    
+                    # Convert SVG to PNG with proper dimensions
+                    png_data = cairosvg.svg2png(
+                        bytestring=svg_content,
+                        output_width=width,
+                        output_height=height
+                    )
+                    img = Image.open(io.BytesIO(png_data))
+                    return img, 'SVG'
+                    
                 except Exception as svg_error:
-                    st.warning(f"Error converting SVG {url}: {str(svg_error)}. Creating placeholder instead.")
-                    return create_placeholder(400, 300, "#CCCCCC", add_text=True)
+                    st.warning(f"SVG conversion error for {url}: {str(svg_error)}")
+                    return create_placeholder(400, 300, "#CCCCCC", add_text=True), 'SVG'
             else:
-                st.info(f"SVG file detected: {url}. Creating placeholder (cairosvg not available).")
-                return create_placeholder(400, 300, "#CCCCCC", add_text=True)
-        else:
-            # Handle regular image formats
-            return Image.open(io.BytesIO(response.content))
+                st.info(f"SVG detected but cairosvg not available: {url}")
+                return create_placeholder(400, 300, "#CCCCCC", add_text=True), 'SVG'
+        
+        # Handle regular image formats
+        img = Image.open(io.BytesIO(response.content))
+        
+        # Detect actual format from image
+        actual_format = img.format or 'JPEG'
+        
+        # Handle WebP specially
+        if actual_format == 'WEBP':
+            # WebP can have transparency
+            if img.mode in ('RGBA', 'LA', 'P'):
+                st.info(f"WebP with transparency detected: {url}")
+        
+        return img, actual_format
             
     except requests.RequestException as e:
-        st.error(f"Network error loading image from {url}: {str(e)}")
-        return None
-    except IOError as e:
-        st.error(f"File error loading image from {url}: {str(e)}")
+        st.error(f"Network error: {url} - {str(e)}")
         return None
     except Exception as e:
-        st.error(f"Unexpected error loading image from {url}: {str(e)}")
+        st.error(f"Error loading: {url} - {str(e)}")
         return None
 
 def get_filename_from_url(url: str) -> str:
@@ -182,42 +217,59 @@ def create_placeholder(width: int, height: int, color: str, add_text: bool = Tru
     
     return img
 
-def get_image_format_from_url(url: str) -> str:
-    """Determine image format from URL or default to JPEG."""
+def get_image_format_from_image(img: Image.Image, url: str) -> str:
+    """Get format from actual image object, fallback to URL."""
+    if img.format:
+        return img.format
+    
+    # Fallback to URL extension
     url_lower = url.lower()
-    if url_lower.endswith('.png'):
+    if '.png' in url_lower:
         return 'PNG'
-    elif url_lower.endswith('.gif'):
-        return 'GIF'
-    elif url_lower.endswith('.bmp'):
-        return 'BMP'
-    elif url_lower.endswith('.webp'):
+    elif '.webp' in url_lower:
         return 'WEBP'
-    elif url_lower.endswith('.tiff') or url_lower.endswith('.tif'):
-        return 'TIFF'
+    elif '.gif' in url_lower:
+        return 'GIF'
     else:
-        return 'JPEG'  # Default format
+        return 'JPEG'
 
 def image_to_bytes(img: Image.Image, format: str = None, quality: int = 85, png_compression: int = 6) -> bytes:
-    """Convert PIL Image to bytes with format preservation and quality options."""
+    """Convert PIL Image to bytes with proper format handling."""
     img_bytes = io.BytesIO()
     
-    # Use PNG as default if no format specified
-    if format is None:
+    # Default to PNG if no format or SVG
+    if format is None or format == 'SVG':
         format = "PNG"
     
-    # Convert RGBA to RGB if saving as JPEG
-    if format.upper() == "JPEG" and img.mode == "RGBA":
-        # Create a white background
-        rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-        rgb_img.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
-        img = rgb_img
+    # WebP handling - preserve transparency
+    if format.upper() == 'WEBP':
+        if img.mode in ('RGBA', 'LA'):
+            # Keep as PNG to preserve transparency
+            img.save(img_bytes, format='PNG', compress_level=png_compression, optimize=True)
+        else:
+            # Can convert to JPEG for smaller size
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.save(img_bytes, format='JPEG', quality=quality, optimize=True)
     
-    # Save with appropriate options
-    if format.upper() == "JPEG":
-        img.save(img_bytes, format=format, quality=quality, optimize=True)
-    elif format.upper() == "PNG":
-        img.save(img_bytes, format=format, compress_level=png_compression, optimize=True)
+    # JPEG handling - remove transparency
+    elif format.upper() == 'JPEG':
+        if img.mode in ('RGBA', 'LA', 'P'):
+            # Create white background
+            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+            img = rgb_img
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.save(img_bytes, format='JPEG', quality=quality, optimize=True)
+    
+    # PNG handling
+    elif format.upper() == 'PNG':
+        img.save(img_bytes, format='PNG', compress_level=png_compression, optimize=True)
+    
+    # Other formats
     else:
         img.save(img_bytes, format=format)
     
@@ -391,9 +443,13 @@ def main():
                     
                     for idx, url in enumerate(urls):
                         status_text.text(f"Loading image {idx + 1} of {len(urls)}: {get_filename_from_url(url)}")
-                        img = get_image_from_url(url)
-                        if img:
-                            st.session_state.images_data[url] = img
+                        result = get_image_from_url(url)
+                        if result:
+                            img, format_info = result
+                            st.session_state.images_data[url] = {
+                                'image': img,
+                                'format': format_info
+                            }
                         else:
                             st.session_state.failed_downloads[url] = "Failed to load image"
                         progress_bar.progress((idx + 1) / len(urls))
@@ -411,10 +467,10 @@ def main():
                 
                 # Show image statistics
                 if st.session_state.images_data:
-                    total_size_mb = sum(len(image_to_bytes(img)) for img in st.session_state.images_data.values()) / (1024 * 1024)
-                    avg_width = sum(img.width for img in st.session_state.images_data.values()) // len(st.session_state.images_data)
-                    avg_height = sum(img.height for img in st.session_state.images_data.values()) // len(st.session_state.images_data)
-                    unique_formats = set(get_image_format_from_url(url) for url in st.session_state.images_data.keys())
+                    total_size_mb = sum(len(image_to_bytes(img_data['image'])) for img_data in st.session_state.images_data.values()) / (1024 * 1024)
+                    avg_width = sum(img_data['image'].width for img_data in st.session_state.images_data.values()) // len(st.session_state.images_data)
+                    avg_height = sum(img_data['image'].height for img_data in st.session_state.images_data.values()) // len(st.session_state.images_data)
+                    unique_formats = set(img_data['format'] for img_data in st.session_state.images_data.values())
                     
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Total Images", len(st.session_state.images_data))
@@ -436,7 +492,8 @@ def main():
                 if st.button("Generate Placeholders", type="primary"):
                     with st.spinner("Generating placeholders..."):
                         st.session_state.placeholders_data = {}
-                        for url, img in st.session_state.images_data.items():
+                        for url, img_data in st.session_state.images_data.items():
+                            img = img_data['image']
                             placeholder = create_placeholder(
                                 img.width, img.height, placeholder_color, add_text=bool(placeholder_text)
                             )
@@ -465,10 +522,11 @@ def main():
                     if st.button("Download All Originals (ZIP)"):
                         with st.spinner("Creating ZIP file..."):
                             files = {}
-                            for url, img in st.session_state.images_data.items():
+                            for url, img_data in st.session_state.images_data.items():
+                                img = img_data['image']
+                                format_info = img_data['format']
                                 filename = get_filename_from_url(url)
-                                original_format = get_image_format_from_url(url)
-                                files[filename] = image_to_bytes(img, original_format)
+                                files[filename] = image_to_bytes(img, format_info)
                             
                             zip_data = create_zip_file(files)
                             st.download_button(
@@ -513,9 +571,10 @@ def main():
                         for j, col in enumerate(cols):
                             if i + j < len(urls_list):
                                 url = urls_list[i + j]
-                                img = st.session_state.images_data.get(url)
+                                img_data = st.session_state.images_data.get(url)
                                 
-                                if img:
+                                if img_data:
+                                    img = img_data['image']
                                     with col:
                                         # Side-by-side comparison
                                         comp_col1, comp_col2 = st.columns(2)
@@ -536,13 +595,13 @@ def main():
                                         btn_col1, btn_col2, btn_col3 = st.columns(3)
                                         
                                         with btn_col1:
-                                            original_format = get_image_format_from_url(url)
-                                            original_bytes = image_to_bytes(img, original_format)
+                                            format_info = img_data['format']
+                                            original_bytes = image_to_bytes(img, format_info)
                                             st.download_button(
                                                 label="📥 Original",
                                                 data=original_bytes,
                                                 file_name=filename,
-                                                mime=f"image/{original_format.lower()}",
+                                                mime=f"image/{format_info.lower()}",
                                                 key=f"orig_comp_{i}_{j}"
                                             )
                                         
@@ -576,9 +635,10 @@ def main():
                         for j, col in enumerate(cols):
                             if i + j < len(urls_list):
                                 url = urls_list[i + j]
-                                img = st.session_state.images_data.get(url)
+                                img_data = st.session_state.images_data.get(url)
                                 
-                                if img:
+                                if img_data:
+                                    img = img_data['image']
                                     with col:
                                         # Display image
                                         st.image(img, use_container_width=True)
@@ -592,13 +652,13 @@ def main():
                                         btn_col1, btn_col2, btn_col3 = st.columns(3)
                                         
                                         with btn_col1:
-                                            original_format = get_image_format_from_url(url)
-                                            original_bytes = image_to_bytes(img, original_format)
+                                            format_info = img_data['format']
+                                            original_bytes = image_to_bytes(img, format_info)
                                             st.download_button(
                                                 label="📥 Orig",
                                                 data=original_bytes,
                                                 file_name=filename,
-                                                mime=f"image/{original_format.lower()}",
+                                                mime=f"image/{format_info.lower()}",
                                                 key=f"orig_{i}_{j}",
                                                 help="Download original image"
                                             )
